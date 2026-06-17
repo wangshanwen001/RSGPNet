@@ -37,8 +37,8 @@ python3 demo.py
 ```
 
 ### Evaluation
-Please run the following script to obtain the evaluation metrics.
 ---
+Please run the following script to obtain the evaluation metrics.
 ```
 python3 eval.py
 ```
