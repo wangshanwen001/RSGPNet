@@ -1,0 +1,45 @@
+# RSGPNet
+The code implementation of the RSGPNet.
+![rsgpnet](docs/rsgpnet.png)
+
+### Environment
+---
+Please run the following script to install the SemiEarth runtime environment.
+```
+pip install -r requirements.txt
+```
+
+### Dataset
+---
+Download the processed [Datasets](https://pan.baidu.com/s/1SHK0v0t7yYfqLBXVbkuQkA). Code = ``7342``.
+Your file structure will be like:
+```
+├── [Your Dataset Path]
+    ├── img_dir
+        ├── train
+        ├── val
+            ├── img_001.png
+            ├── img_002.png
+            └── ...
+    ├── ann_dir
+        ├── train
+        ├── val
+            ├── label_001.png
+            ├── label_002.png
+            └── ...
+```
+
+### Demo
+---
+Please run the following script to start the demo.
+```
+python3 demo.py
+```
+
+### Evaluation
+Please run the following script to obtain the evaluation metrics.
+---
+```
+python3 eval.py
+```
+
