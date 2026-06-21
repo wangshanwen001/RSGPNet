@@ -17,7 +17,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description='CorrCLIP evaluation with MMSeg')
 
-    parser.add_argument('config', default='./configs/cfg_potsdam_bf1.py')
+    parser.add_argument('config', default='./configs/cfg_potsdam.py')
 
     parser.add_argument('--show', action='store_true')
     parser.add_argument('--show_dir', default='./show_dir/')
