@@ -43,3 +43,6 @@ Please run the following script to obtain the evaluation metrics.
 python3 eval.py
 ```
 
+### Acknowledgments
+---
+This implementation is based on [SAM 3](https://github.com/facebookresearch/sam3) and [SegEarth‑OV3](https://github.com/earth-insights/SegEarth-OV-3). We thank the authors for their excellent open‑source work.
