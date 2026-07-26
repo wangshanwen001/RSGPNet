@@ -48,6 +48,7 @@ python3 eval.py
 Download the processed [Datasets](https://huggingface.co/datasets/fluorites/RSGPNet/tree/main).
 
 ### Citation
+---
 ```
 @article{wang2026rsgpnet,
   title={RSGPNet: Geometric Prompting for Remote Sensing Open-Vocabulary Semantic Segmentation},
