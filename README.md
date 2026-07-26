@@ -40,7 +40,7 @@ python3 demo.py
 ---
 Please run the following script to obtain the evaluation metrics.
 ```
-python3 eval.py
+python3 eval.py \ configs/cfg_dataset.py \ --model-type RSGPNet
 ```
 
 ### Citation
