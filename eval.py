@@ -9,6 +9,7 @@ from mmengine.runner import Runner
 from mmengine.config import Config, DictAction
 
 import RSGPNet
+import SegEarthOV3
 import custom_datasets
 import boundary_f1_metric
 
@@ -17,7 +18,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description='CorrCLIP evaluation with MMSeg')
 
-    parser.add_argument('config', default='./configs/cfg_potsdam.py')
+    parser.add_argument('config', default='./configs/cfg_potsdam_bf1.py')
 
     parser.add_argument('--show', action='store_true')
     parser.add_argument('--show_dir', default='./show_dir/')
@@ -36,16 +37,17 @@ def parse_args():
     parser.add_argument('--local_rank', '--local-rank', type=int, default=0)
 
     parser.add_argument(
-        '--calc-flops',
+        '--calc-memory',
         action='store_true',
-        help='calculate FLOPs with torch.profiler'
+        default=True,
+        help='calculate model params and GPU memory'
     )
 
     parser.add_argument(
-        '--flops-num-samples',
-        type=int,
-        default=1,
-        help='number of samples used to estimate FLOPs'
+        '--model-type',
+        choices=['RSGPNet', 'SegEarthOV3'],
+        default='RSGPNet',
+        help='Model type to use for evaluation'
     )
 
     args = parser.parse_args()
@@ -119,9 +121,11 @@ def append_experiment_result(file_path, experiment_data):
         sheet['D1'] = 'mIoU'
         sheet['E1'] = 'mAcc'
         sheet['F1'] = 'mF1'
-        sheet['G1'] = 'FLOPs(T)'
-        sheet['H1'] = 'FPS'
-        sheet['I1'] = 'mBF1'
+        sheet['G1'] = 'FPS'
+        sheet['H1'] = 'mBF1'
+        sheet['I1'] = 'Params(M)'
+        sheet['J1'] = 'Memory(GB)'
+        sheet['K1'] = 'PeakMem(GB)'
 
     last_row = sheet.max_row
 
@@ -135,9 +139,11 @@ def append_experiment_result(file_path, experiment_data):
         sheet.cell(row=row, column=5, value=result.get('mAcc'))
         sheet.cell(row=row, column=6,
                    value=result.get('mFscore', result.get('mF1')))
-        sheet.cell(row=row, column=7, value=result.get('FLOPs(T)'))
-        sheet.cell(row=row, column=8, value=result.get('FPS'))
-        sheet.cell(row=row, column=9, value=result.get('mBF1', result.get('BF1')))
+        sheet.cell(row=row, column=7, value=result.get('FPS'))
+        sheet.cell(row=row, column=8, value=result.get('mBF1', result.get('BF1')))
+        sheet.cell(row=row, column=9, value=result.get('params(M)'))
+        sheet.cell(row=row, column=10, value=result.get('memory_allocated(GB)'))
+        sheet.cell(row=row, column=11, value=result.get('peak_memory(GB)'))
 
     workbook.save(file_path)
 
@@ -149,23 +155,26 @@ def get_dataset_size(runner):
         return None
 
 
-def calculate_flops_with_profiler(runner, num_samples=1):
+def calculate_gpu_memory(runner):
     if not torch.cuda.is_available():
         return None
 
     model = runner.model
     model.eval()
 
+    torch.cuda.empty_cache()
+    torch.cuda.synchronize()
+
+    baseline_allocated = torch.cuda.memory_allocated()
+    baseline_reserved = torch.cuda.memory_reserved()
+
     dataloader = runner.test_dataloader
 
-    total_flops = 0
-    counted = 0
+    peak_allocated = 0
+    peak_reserved = 0
 
     with torch.no_grad():
         for data in dataloader:
-            if counted >= num_samples:
-                break
-
             data = runner.model.data_preprocessor(data, False)
 
             inputs = data['inputs']
@@ -180,35 +189,43 @@ def calculate_flops_with_profiler(runner, num_samples=1):
 
             torch.cuda.synchronize()
 
-            with torch.profiler.profile(
-                activities=[
-                    torch.profiler.ProfilerActivity.CPU,
-                    torch.profiler.ProfilerActivity.CUDA
-                ],
-                with_flops=True,
-                record_shapes=False,
-                profile_memory=False
-            ) as prof:
-                model.predict(inputs, data_samples)
+            model.predict(inputs, data_samples)
 
             torch.cuda.synchronize()
 
-            sample_flops = sum(
-                item.flops for item in prof.key_averages()
-                if item.flops is not None
-            )
+            current_allocated = torch.cuda.memory_allocated()
+            current_reserved = torch.cuda.memory_reserved()
 
-            total_flops += sample_flops
-            counted += 1
+            peak_allocated = max(peak_allocated, current_allocated)
+            peak_reserved = max(peak_reserved, current_reserved)
 
-    if counted == 0:
-        return None
+            break
 
-    avg_flops = total_flops / counted
+    model_memory_allocated = peak_allocated - baseline_allocated
+    model_memory_reserved = peak_reserved - baseline_reserved
 
-    flops_t = avg_flops / 1e12
+    model_memory_allocated_gb = model_memory_allocated / 1e9
+    model_memory_reserved_gb = model_memory_reserved / 1e9
 
-    return round(flops_t, 4)
+    total_params = sum(p.numel() for p in model.parameters())
+    
+    if total_params == 0:
+        if hasattr(model, 'processor') and hasattr(model.processor, 'model'):
+            sam_model = model.processor.model
+            total_params = sum(p.numel() for p in sam_model.parameters())
+        elif hasattr(model, 'sam3_model'):
+            total_params = sum(p.numel() for p in model.sam3_model.parameters())
+    
+    total_params_m = total_params / 1e6
+
+    result = {
+        'params(M)': round(total_params_m, 2),
+        'memory_allocated(GB)': round(model_memory_allocated_gb, 4),
+        'memory_reserved(GB)': round(model_memory_reserved_gb, 4),
+        'peak_memory(GB)': round(peak_reserved / 1e9, 4)
+    }
+
+    return result
 
 
 def main():
@@ -232,16 +249,24 @@ def main():
 
     cfg = add_mfscore_to_evaluator(cfg)
 
+    if args.model_type == 'RSGPNet':
+        cfg.model.type = 'RSGPNetSegmentation'
+        cfg.model.model_type = 'RSGPNet'
+    elif args.model_type == 'SegEarthOV3':
+        cfg.model.type = 'SegEarthOV3Segmentation'
+        cfg.model.model_type = 'SegEarthOV3'
+
     runner = Runner.from_cfg(cfg)
 
-    flops_t = None
-    if runner.rank == 0 and args.calc_flops:
-        print('Calculating FLOPs...')
-        flops_t = calculate_flops_with_profiler(
-            runner,
-            num_samples=args.flops_num_samples
-        )
-        print(f'FLOPs(T): {flops_t}')
+    memory_result = None
+    if runner.rank == 0 and args.calc_memory:
+        print('Calculating model params and GPU memory...')
+        memory_result = calculate_gpu_memory(runner)
+        if memory_result is not None:
+            print(f"Params(M): {memory_result['params(M)']}")
+            print(f"Memory Allocated(GB): {memory_result['memory_allocated(GB)']}")
+            print(f"Memory Reserved(GB): {memory_result['memory_reserved(GB)']}")
+            print(f"Peak Memory(GB): {memory_result['peak_memory(GB)']}")
 
     if torch.cuda.is_available():
         torch.cuda.synchronize()
@@ -265,9 +290,11 @@ def main():
     results.update({
         'Model': cfg.model.model_type,
         'Dataset': cfg.dataset_type,
-        'FLOPs(T)': flops_t,
         'FPS': fps
     })
+
+    if memory_result is not None:
+        results.update(memory_result)
 
     if runner.rank == 0:
         append_experiment_result('results.xlsx', [results])
