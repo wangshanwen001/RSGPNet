@@ -30,7 +30,6 @@ class RSGPNetSegmentation(BaseSegmentor):
                  use_presence_score=True,
                  use_transformer_decoder=True,
 
-                 # mask re-prompt refinement
                  use_mask_reprompt=False,
                  reprompt_class_indices= [3,5,6],
                  reprompt_prob_thd=0.65,
@@ -43,6 +42,8 @@ class RSGPNetSegmentation(BaseSegmentor):
                  reprompt_min_consistency_iou=0.50,
                  reprompt_area_ratio_low=0.50,
                  reprompt_area_ratio_high=1.80,
+
+                 reprompt_prompt_type='box', # 'box', 'point', 'mask'
 
                  **kwargs):
         super().__init__()
@@ -81,6 +82,8 @@ class RSGPNetSegmentation(BaseSegmentor):
         self.reprompt_min_consistency_iou = reprompt_min_consistency_iou
         self.reprompt_area_ratio_low = reprompt_area_ratio_low
         self.reprompt_area_ratio_high = reprompt_area_ratio_high
+
+        self.reprompt_prompt_type = reprompt_prompt_type
 
     def _resize_2d_logit(self, logit, h, w):
         logit = logit.squeeze()
@@ -205,6 +208,64 @@ class RSGPNetSegmentation(BaseSegmentor):
 
         return refined_logits
 
+    def _extract_points_from_mask(self, prob_map, width, height):
+        if cv2 is None:
+            return []
+
+        mask = (prob_map.detach().float().cpu().numpy() > self.reprompt_prob_thd).astype(np.uint8)
+
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
+
+        points = []
+        for lab in range(1, num_labels):
+            area = stats[lab, cv2.CC_STAT_AREA]
+            if area < self.reprompt_min_area:
+                continue
+
+            cx, cy = centroids[lab]
+            cx_int, cy_int = int(cx), int(cy)
+            r = 2
+            y_start = max(0, cy_int - r)
+            y_end = min(prob_map.shape[0], cy_int + r + 1)
+            x_start = max(0, cx_int - r)
+            x_end = min(prob_map.shape[1], cx_int + r + 1)
+            comp_prob = prob_map[y_start:y_end, x_start:x_end].mean().item()
+
+            points.append((comp_prob, area, [cx, cy]))
+
+        points = sorted(points, key=lambda t: (t[0], t[1]), reverse=True)
+        points = points[:self.reprompt_max_components]
+
+        return [p[-1] for p in points]
+
+    def _points_to_boxes(self, points, width, height, box_size_ratio=0.05):
+        boxes = []
+        for cx, cy in points:
+            box_size = min(width, height) * box_size_ratio
+            x1 = max(0, cx - box_size / 2)
+            y1 = max(0, cy - box_size / 2)
+            x2 = min(width, cx + box_size / 2)
+            y2 = min(height, cy + box_size / 2)
+            boxes.append([x1, y1, x2, y2])
+        return boxes
+
+    def _extract_prompts(self, coarse_prob, width, height):
+        prompt_type = self.reprompt_prompt_type
+
+        if prompt_type == 'box':
+            return self._extract_boxes_from_mask(coarse_prob, width, height)
+
+        elif prompt_type == 'point':
+            points = self._extract_points_from_mask(coarse_prob, width, height)
+            return self._points_to_boxes(points, width, height)
+
+        elif prompt_type == 'mask':
+            boxes = self._extract_boxes_from_mask(coarse_prob, width, height)
+            return boxes
+
+        else:
+            return self._extract_boxes_from_mask(coarse_prob, width, height)
+
     def _mask_reprompt_refine(self, image, inference_state, coarse_logit):
 
         width, height = image.size
@@ -217,14 +278,14 @@ class RSGPNetSegmentation(BaseSegmentor):
         if coarse_area < self.reprompt_min_area:
             return coarse_logit
 
-        boxes_xyxy = self._extract_boxes_from_mask(coarse_prob, width, height)
-        if len(boxes_xyxy) == 0:
+        prompts_xyxy = self._extract_prompts(coarse_prob, width, height)
+        if len(prompts_xyxy) == 0:
             return coarse_logit
 
         refined_state = inference_state
 
-        for box_xyxy in boxes_xyxy:
-            norm_box = self._xyxy_to_norm_cxcywh(box_xyxy, width, height)
+        for prompt_xyxy in prompts_xyxy:
+            norm_box = self._xyxy_to_norm_cxcywh(prompt_xyxy, width, height)
 
             out_state = self.processor.add_geometric_prompt(
                 state=refined_state,
@@ -330,7 +391,6 @@ class RSGPNetSegmentation(BaseSegmentor):
         h_stride, w_stride = stride
         h_crop, w_crop = crop_size
 
-        # Initialize accumulators
         preds = torch.zeros((self.num_queries, h_img, w_img), device=self.device)
         count_mat = torch.zeros((1, h_img, w_img), device=self.device)
 
@@ -344,17 +404,13 @@ class RSGPNetSegmentation(BaseSegmentor):
                 y2 = min(y1 + h_crop, h_img)
                 x2 = min(x1 + w_crop, w_img)
 
-                # Adjust start points to ensure crop size is valid at boundaries
                 y1 = max(y2 - h_crop, 0)
                 x1 = max(x2 - w_crop, 0)
 
-                # Crop via PIL
                 crop_img = image.crop((x1, y1, x2, y2))
 
-                # Inference on crop
                 crop_seg_logit = self._inference_single_view(crop_img)
 
-                # Accumulate results
                 preds[:, y1:y2, x1:x2] += crop_seg_logit
                 count_mat[:, y1:y2, x1:x2] += 1
 
@@ -367,7 +423,7 @@ class RSGPNetSegmentation(BaseSegmentor):
         if data_samples is not None:
             batch_img_metas = [data_sample.metainfo for data_sample in data_samples]
         else:
-            # Fallback for meta info construction
+
             batch_img_metas = [
                                   dict(
                                       ori_shape=inputs.shape[2:],
@@ -377,18 +433,16 @@ class RSGPNetSegmentation(BaseSegmentor):
                               ] * inputs.shape[0]
 
         for i, meta in enumerate(batch_img_metas):
-            # Load original image to preserve details for SAM3
+
             image_path = meta.get('img_path')
             image = Image.open(image_path).convert('RGB')
             ori_shape = meta['ori_shape']
 
-            # Determine inference mode
             if self.slide_crop > 0 and (self.slide_crop < image.size[0] or self.slide_crop < image.size[1]):
                 seg_logits = self.slide_inference(image, self.slide_stride, self.slide_crop)
             else:
                 seg_logits = self._inference_single_view(image)
 
-            # Resize to original shape if necessary (e.g. padding effects)
             if seg_logits.shape[-2:] != ori_shape:
                 seg_logits = F.interpolate(
                     seg_logits.unsqueeze(0),
@@ -397,7 +451,6 @@ class RSGPNetSegmentation(BaseSegmentor):
                     align_corners=False
                 ).squeeze(0)
 
-            # Post-processing
             if self.num_cls != self.num_queries:
                 seg_logits = seg_logits.unsqueeze(0)
                 cls_index = nn.functional.one_hot(self.query_idx)
@@ -407,7 +460,6 @@ class RSGPNetSegmentation(BaseSegmentor):
 
             seg_pred = torch.argmax(seg_logits, dim=0)
 
-            # Apply probability threshold
             max_vals = seg_logits.max(0)[0]
             seg_pred[max_vals < self.prob_thd] = self.bg_idx
 
