@@ -11,7 +11,7 @@ pip install -r requirements.txt
 
 ### Dataset
 ---
-Download the processed [Datasets](https://pan.baidu.com/s/1SHK0v0t7yYfqLBXVbkuQkA). Code = ``7342``.
+Download the processed datasets from Baidu Netdisk [Datasets](https://pan.baidu.com/s/1SHK0v0t7yYfqLBXVbkuQkA) (access code: `7342`), or from Hugging Face [Datasets](https://huggingface.co/datasets/fluorites/RSGPNet/tree/main).
 Your file structure will be like:
 ```
 ├── [Your Dataset Path]
@@ -42,10 +42,6 @@ Please run the following script to obtain the evaluation metrics.
 ```
 python3 eval.py
 ```
-
-### Hugging Face
----
-Download the processed [Datasets](https://huggingface.co/datasets/fluorites/RSGPNet/tree/main).
 
 ### Citation
 ---
