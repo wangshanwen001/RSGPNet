@@ -43,6 +43,20 @@ Please run the following script to obtain the evaluation metrics.
 python3 eval.py
 ```
 
+### Hugging Face
+---
+Download the processed [Datasets](https://huggingface.co/datasets/fluorites/RSGPNet/tree/main).
+
+### Citation
+```
+@article{wang2026rsgpnet,
+  title={RSGPNet: Geometric Prompting for Remote Sensing Open-Vocabulary Semantic Segmentation},
+  author={Wang, Shanwen and Sun, Xin and Wang, Sirui and Zhu, Xiao Xiang},
+  journal={arXiv preprint arXiv:2606.28410},
+  year={2026}
+}
+```
+
 ### Acknowledgments
 ---
 This implementation is based on [SAM 3](https://github.com/facebookresearch/sam3) and [SegEarth‑OV3](https://github.com/earth-insights/SegEarth-OV-3). We thank the authors for their excellent open‑source work.
